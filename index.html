@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>random chord generator - Pure Data</title>
 
-  <!-- Inline Data-URI Favicon (Prevents 404 Console Errors on GitHub Pages) -->
+  <!-- Inline Data-URI Favicon -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 fill=%22%23e1e1e1%22 stroke=%22%23000%22 stroke-width=%2210%22/><circle cx=%2250%22 cy=%2250%22 r=%2230%22 fill=%22none%22 stroke=%22%23000%22 stroke-width=%228%22/></svg>">
 
   <style>
@@ -27,7 +27,6 @@
       align-items: center;
       min-height: 100vh;
       padding: 20px;
-      /* Prevent mobile rubber-band scrolling */
       overscroll-behavior: none;
     }
 
@@ -178,7 +177,7 @@
     }
 
     .pd-tgl.active {
-      background-color: #ff8500; /* Pure Data orange */
+      background-color: #ff8500;
     }
 
     .pd-tgl.active::before,
@@ -211,7 +210,6 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      /* Crucial for iOS/Android smooth dragging without page scroll */
       touch-action: none;
     }
 
@@ -299,30 +297,31 @@
   </div>
 
   <script>
+    // Hidden HTML5 Audio Element to force iOS 'Playback' category (bypasses physical Silent Switch)
+    const silentAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==');
+    silentAudio.loop = true;
+
     // --- Web Audio Engine & Patch Logic ---
     let audioCtx = null;
     let masterGain = null;
-    let limiterNode = null; // Soft-clipping safety limiter
+    let limiterNode = null;
     let isAudioInitialized = false;
 
-    // Sustained synth voice structure
     const NUM_VOICES = 5;
     let voiceOscillators = [];
     let voiceGains = [];
-    let filterNode = null; // Single Resonant Low-Pass Filter
+    let filterNode = null;
     let chorusDelayLeft = null;
     let chorusDelayRight = null;
     let chorusLfo1 = null;
     let chorusLfo2 = null;
 
-    // Control state
-    let chordMode = 'simple'; // 'simple' or 'complex'
+    let chordMode = 'simple';
     let autoMode = false;
-    let chordLengthMs = 2000; // 2000 ms default
+    let chordLengthMs = 2000;
     let autoTimer = null;
     let isPlaying = false;
 
-    // Default Canvas Grey Color
     const DEFAULT_CANVAS_GREY = '#e1e1e1';
 
     function initAudio() {
@@ -331,31 +330,26 @@
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       audioCtx = new AudioContextClass();
 
-      // Master Gain Stage
       masterGain = audioCtx.createGain();
       masterGain.gain.setValueAtTime(0.0, audioCtx.currentTime);
 
-      // Soft Clipping Safety Limiter Stage
       limiterNode = audioCtx.createDynamicsCompressor();
-      limiterNode.threshold.setValueAtTime(-0.5, audioCtx.currentTime); // Ceiling just below 0 dBFS
-      limiterNode.knee.setValueAtTime(0.0, audioCtx.currentTime);        // Hard knee for brickwall protection
-      limiterNode.ratio.setValueAtTime(20.0, audioCtx.currentTime);      // Max limiting ratio
-      limiterNode.attack.setValueAtTime(0.003, audioCtx.currentTime);    // Fast attack (3ms)
-      limiterNode.release.setValueAtTime(0.1, audioCtx.currentTime);     // Smooth release (100ms)
+      limiterNode.threshold.setValueAtTime(-0.5, audioCtx.currentTime);
+      limiterNode.knee.setValueAtTime(0.0, audioCtx.currentTime);
+      limiterNode.ratio.setValueAtTime(20.0, audioCtx.currentTime);
+      limiterNode.attack.setValueAtTime(0.003, audioCtx.currentTime);
+      limiterNode.release.setValueAtTime(0.1, audioCtx.currentTime);
 
-      // Single Resonant Low-Pass Filter
       filterNode = audioCtx.createBiquadFilter();
       filterNode.type = 'lowpass';
       filterNode.frequency.setValueAtTime(300, audioCtx.currentTime);
       filterNode.Q.setValueAtTime(1.0, audioCtx.currentTime);
 
-      // Simple Chorus Subpatch Implementation
       chorusDelayLeft = audioCtx.createDelay(0.1);
       chorusDelayRight = audioCtx.createDelay(0.1);
       chorusDelayLeft.delayTime.setValueAtTime(0.015, audioCtx.currentTime);
       chorusDelayRight.delayTime.setValueAtTime(0.020, audioCtx.currentTime);
 
-      // Chorus LFOs
       chorusLfo1 = audioCtx.createOscillator();
       chorusLfo2 = audioCtx.createOscillator();
       chorusLfo1.frequency.setValueAtTime(0.5, audioCtx.currentTime);
@@ -374,10 +368,8 @@
       chorusLfo1.start();
       chorusLfo2.start();
 
-      // Stereo Merger for Chorus
       const merger = audioCtx.createChannelMerger(2);
 
-      // Voice Creation (5 Sawtooth Oscillators)
       for (let i = 0; i < NUM_VOICES; i++) {
         const osc = audioCtx.createOscillator();
         const vGain = audioCtx.createGain();
@@ -396,7 +388,6 @@
         voiceGains.push(vGain);
       }
 
-      // Voice Routing: Voices -> Low-Pass Filter -> Chorus -> Master Gain -> Limiter -> Output
       filterNode.connect(chorusDelayLeft);
       filterNode.connect(chorusDelayRight);
 
@@ -410,9 +401,19 @@
       isAudioInitialized = true;
     }
 
-    // iOS Hardware Silent Switch Bypass
-    function forceUnmuteIOS() {
-      if (!audioCtx) return;
+    async function unlockAudioIOS() {
+      initAudio();
+
+      try {
+        await silentAudio.play();
+      } catch (e) {
+        console.log('HTML Audio play error:', e);
+      }
+
+      if (audioCtx && audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+      }
+
       const buffer = audioCtx.createBuffer(1, 1, 22050);
       const source = audioCtx.createBufferSource();
       source.buffer = buffer;
@@ -420,31 +421,21 @@
       source.start(0);
     }
 
-    // Helper: MIDI to Frequency
     function mtof(midi) {
       return 440 * Math.pow(2, (midi - 69) / 12);
     }
 
-    // 1. Simple Chord Generation Logic
     function generateSimpleChord() {
       const minRoot = 45; 
       const maxRoot = 64;
       const root = Math.floor(Math.random() * (maxRoot - minRoot + 1)) + minRoot;
-
-      const third = Math.random() < 0.5 ? 3 : 4;   // 3 = Minor, 4 = Major
+      const third = Math.random() < 0.5 ? 3 : 4;   
       const fifth = 7;                              
-      const seventh = Math.random() < 0.5 ? 10 : 11; // 10 = Minor 7th, 11 = Major 7th
+      const seventh = Math.random() < 0.5 ? 10 : 11;
 
-      return [
-        root - 12,     // Sub-bass voice
-        root,          
-        root + third,  
-        root + fifth,  
-        root + seventh 
-      ];
+      return [root - 12, root, root + third, root + fifth, root + seventh];
     }
 
-    // 2. Complex Chord Generation Logic
     function generateComplexChord() {
       const minRoot = 45;
       const maxRoot = 62;
@@ -460,65 +451,50 @@
       ];
     }
 
-    // --- Custom Color Calculation Function ---
     function computeCanvasColor(chordMidi, targetCutoff, targetQ) {
-      const rootMidi = chordMidi[1]; // Root pitch class
+      const rootMidi = chordMidi[1];
       const pitchClass = rootMidi % 12;
+      const hue = pitchClass * 30;
 
-      // 1. Root = Hue (Direct 1-to-1 chromatic mapping across 360 degrees)
-      const hue = pitchClass * 30; // 0 deg = C, 30 deg = C#, ..., 330 deg = B
-
-      // 2. Lightness & Saturation Setup
       let baseLightness = 80;
       let saturation = 20;
       const bassFreq = mtof(chordMidi[0]);
 
       if (chordMode === 'simple') {
-        const third = chordMidi[2] - rootMidi;   // 3 = Minor, 4 = Major
-        const seventh = chordMidi[4] - rootMidi; // 10 = Minor 7th, 11 = Major 7th
+        const third = chordMidi[2] - rootMidi;
+        const seventh = chordMidi[4] - rootMidi;
 
-        // Expanded Lightness Range for Simple Mode (48% to 88%)
-        if (third === 3 && seventh === 10) baseLightness = 48;      // m7 (Deep/Darkest)
-        else if (third === 3 && seventh === 11) baseLightness = 58; // m(maj7)
-        else if (third === 4 && seventh === 10) baseLightness = 74; // Dom7
-        else if (third === 4 && seventh === 11) baseLightness = 86; // maj7 (Very Light)
+        if (third === 3 && seventh === 10) baseLightness = 48;
+        else if (third === 3 && seventh === 11) baseLightness = 58;
+        else if (third === 4 && seventh === 10) baseLightness = 74;
+        else if (third === 4 && seventh === 11) baseLightness = 86;
 
-        // Lightness Boost from Filter Cutoff (+0% to +10%)
         const cutoffRatio = Math.min(8.5, Math.max(2.5, targetCutoff / bassFreq)); 
         const cutoffLightnessBoost = ((cutoffRatio - 2.5) / 6.0) * 10;
         baseLightness = Math.min(92, Math.max(45, baseLightness + cutoffLightnessBoost));
 
-        // Expanded Saturation Range for Simple Mode (30% to 85%)
         const qNormalized = Math.min(1, Math.max(0, (targetQ - 0.1) / 9.9));
         saturation = 30 + qNormalized * 55;
-
       } else {
-        // --- Complex Mode (Wider & Maxed Ranges) ---
         const minNote = chordMidi[0];
         const maxNote = chordMidi[chordMidi.length - 1];
-        const semitoneSpan = maxNote - minNote; // Range (e.g., 20 to 45 semitones)
+        const semitoneSpan = maxNote - minNote;
 
-        // Maximized Lightness Range for Complex Mode (32% to 88%)
         const spanNormalized = Math.min(1, Math.max(0, (semitoneSpan - 20) / 25));
         baseLightness = 32 + spanNormalized * 56;
 
-        // Cutoff Modulation (+0% to +12% lightness)
         const cutoffRatio = Math.min(8.5, Math.max(2.5, targetCutoff / bassFreq));
         const cutoffLightnessBoost = ((cutoffRatio - 2.5) / 6.0) * 12;
         baseLightness = Math.min(94, Math.max(30, baseLightness + cutoffLightnessBoost));
 
-        // Maximized Saturation Range for Complex Mode (35% to 100%)
         const qNormalized = Math.min(1, Math.max(0, (targetQ - 0.1) / 9.9));
-        saturation = 35 + qNormalized * 40; // Base from Q (35% to 75%)
+        saturation = 35 + qNormalized * 40;
 
-        // Small interval clusters add +12% saturation each
         let smallIntervalCount = 0;
         for (let i = 1; i < chordMidi.length - 1; i++) {
-          if (chordMidi[i + 1] - chordMidi[i] <= 3) {
-            smallIntervalCount++;
-          }
+          if (chordMidi[i + 1] - chordMidi[i] <= 3) smallIntervalCount++;
         }
-        saturation += smallIntervalCount * 12; // Spike saturation up to 100%
+        saturation += smallIntervalCount * 12;
       }
 
       const finalLightness = Math.min(94, Math.max(30, baseLightness));
@@ -527,23 +503,19 @@
       return `hsl(${hue.toFixed(1)}, ${finalSaturation.toFixed(1)}%, ${finalLightness.toFixed(1)}%)`;
     }
 
-    // Play Chord Action
-    function playChord() {
+    async function playChord() {
       if (!isAudioInitialized) return;
+
       if (audioCtx.state === 'suspended') {
-        audioCtx.resume();
+        await audioCtx.resume();
       }
 
       const now = audioCtx.currentTime;
       const transitionDuration = 0.08; 
-
-      // Random Filter Sweep Time independent of Chord Length (between 1.0s and 6.0s)
       const filterSweepDuration = 1.0 + Math.random() * 5.0;
 
-      // Get chord array
       const chordMidi = (chordMode === 'simple') ? generateSimpleChord() : generateComplexChord();
 
-      // Update Oscillators (with safe non-zero positive frequency bounds)
       for (let i = 0; i < NUM_VOICES; i++) {
         const freq = Math.max(20, mtof(chordMidi[i]));
         voiceOscillators[i].frequency.cancelScheduledValues(now);
@@ -551,15 +523,11 @@
         voiceOscillators[i].frequency.exponentialRampToValueAtTime(freq, now + transitionDuration);
       }
 
-      // Continuous Floating-Point Cutoff Multiplier Range (2.5x to 8.5x Bass Frequency)
       const bassFreq = mtof(chordMidi[0]);
       const cutoffMultiplier = 2.5 + Math.random() * 6.0; 
       const targetCutoff = bassFreq * cutoffMultiplier;
-
-      // Resonance Range: 0.1 to 10.0
       const targetQ = 0.1 + Math.random() * 9.9;
 
-      // Apply filter ramp over the random 1–6s sweep time
       filterNode.frequency.cancelScheduledValues(now);
       filterNode.frequency.setValueAtTime(filterNode.frequency.value, now);
       filterNode.frequency.linearRampToValueAtTime(targetCutoff, now + filterSweepDuration);
@@ -568,19 +536,16 @@
       filterNode.Q.setValueAtTime(filterNode.Q.value, now);
       filterNode.Q.linearRampToValueAtTime(targetQ, now + filterSweepDuration);
 
-      // Open Master Gain (+6 dB Boost)
       masterGain.gain.cancelScheduledValues(now);
       masterGain.gain.setValueAtTime(masterGain.gain.value, now);
       masterGain.gain.linearRampToValueAtTime(0.70, now + 0.1);
 
-      // Update UI Background Color
       const canvasElem = document.getElementById('pd-canvas');
       canvasElem.style.backgroundColor = computeCanvasColor(chordMidi, targetCutoff, targetQ);
 
       isPlaying = true;
     }
 
-    // Stop Sound Action
     function stopSound() {
       if (!isAudioInitialized) return;
       const now = audioCtx.currentTime;
@@ -588,14 +553,12 @@
       masterGain.gain.setValueAtTime(masterGain.gain.value, now);
       masterGain.gain.linearRampToValueAtTime(0.0, now + 0.15);
 
-      // Revert UI Canvas back to default grey
       const canvasElem = document.getElementById('pd-canvas');
       canvasElem.style.backgroundColor = DEFAULT_CANVAS_GREY;
 
       isPlaying = false;
     }
 
-    // Auto Mode Timer Logic
     function syncAutoTimer() {
       if (autoTimer) {
         clearInterval(autoTimer);
@@ -611,14 +574,13 @@
       }
     }
 
-    // Auto-Resume on Page Visibility Change (Tab focus / Screen unlock)
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible' && audioCtx && audioCtx.state === 'suspended') {
         audioCtx.resume();
       }
     });
 
-    // --- UI Interactions ---
+    // --- UI Element Selectors ---
     const unlockOverlay = document.getElementById('audio-unlock-overlay');
     const unlockBtn = document.getElementById('unlock-btn');
     const bngChord = document.getElementById('bng-chord');
@@ -629,12 +591,18 @@
     const hslLength = document.getElementById('hsl-length');
     const hslIndicator = document.getElementById('hsl-indicator');
 
-    unlockBtn.addEventListener('click', () => {
-      initAudio();
-      forceUnmuteIOS();
-      audioCtx.resume();
-      unlockOverlay.style.display = 'none';
-    });
+    async function handleUnlock(e) {
+      if (e) e.preventDefault();
+      await unlockAudioIOS();
+      if (unlockOverlay) {
+        unlockOverlay.style.display = 'none';
+      }
+    }
+
+    if (unlockBtn) {
+      unlockBtn.addEventListener('pointerdown', handleUnlock);
+      unlockBtn.addEventListener('click', handleUnlock);
+    }
 
     function triggerBng(element) {
       element.classList.add('active');
@@ -675,7 +643,6 @@
       syncAutoTimer();
     });
 
-    // --- Universal Slider Interaction via Pointer Events ---
     let isDraggingSlider = false;
 
     function updateSliderPosition(pointerX) {
@@ -712,7 +679,7 @@
       }
     });
 
-    hslLength.addEventListener('pointercancel', (e) => {
+    hslLength.addEventListener('pointercancel', () => {
       isDraggingSlider = false;
     });
   </script>
