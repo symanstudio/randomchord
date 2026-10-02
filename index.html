@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>random chord generator - Pure Data</title>
 
   <!-- Inline Data-URI Favicon -->
@@ -15,8 +15,7 @@
       padding: 0;
       user-select: none;
       -webkit-user-select: none;
-      -moz-user-select: none;
-      -ms-user-select: none;
+      -webkit-touch-callout: none;
     }
 
     body {
@@ -37,7 +36,7 @@
       left: 0;
       width: 100vw;
       height: 100vh;
-      background: rgba(0, 0, 0, 0.6);
+      background: rgba(0, 0, 0, 0.65);
       display: flex;
       justify-content: center;
       align-items: center;
@@ -297,11 +296,7 @@
   </div>
 
   <script>
-    // Hidden HTML5 Audio Element to force iOS 'Playback' category (bypasses physical Silent Switch)
-    const silentAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==');
-    silentAudio.loop = true;
-
-    // --- Web Audio Engine & Patch Logic ---
+    // Audio engine state variables
     let audioCtx = null;
     let masterGain = null;
     let limiterNode = null;
@@ -323,6 +318,10 @@
     let isPlaying = false;
 
     const DEFAULT_CANVAS_GREY = '#e1e1e1';
+
+    // HTML5 Silent audio element to switch iOS session to "Playback" category
+    const silentAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==');
+    silentAudio.loop = true;
 
     function initAudio() {
       if (isAudioInitialized) return;
@@ -401,19 +400,17 @@
       isAudioInitialized = true;
     }
 
-    async function unlockAudioIOS() {
+    async function unlockAudioEngine() {
+      // Must initiate HTML5 playback synchronously inside stack
+      silentAudio.play().catch(() => {});
+
       initAudio();
 
-      try {
-        await silentAudio.play();
-      } catch (e) {
-        console.log('HTML Audio play error:', e);
-      }
-
-      if (audioCtx && audioCtx.state === 'suspended') {
+      if (audioCtx && audioCtx.state !== 'running') {
         await audioCtx.resume();
       }
 
+      // Play 1-sample silent Web Audio buffer to kick active hardware pipeline
       const buffer = audioCtx.createBuffer(1, 1, 22050);
       const source = audioCtx.createBufferSource();
       source.buffer = buffer;
@@ -504,9 +501,11 @@
     }
 
     async function playChord() {
-      if (!isAudioInitialized) return;
+      if (!isAudioInitialized) {
+        await unlockAudioEngine();
+      }
 
-      if (audioCtx.state === 'suspended') {
+      if (audioCtx.state !== 'running') {
         await audioCtx.resume();
       }
 
@@ -517,9 +516,9 @@
       const chordMidi = (chordMode === 'simple') ? generateSimpleChord() : generateComplexChord();
 
       for (let i = 0; i < NUM_VOICES; i++) {
-        const freq = Math.max(20, mtof(chordMidi[i]));
+        const freq = Math.max(10, mtof(chordMidi[i]));
         voiceOscillators[i].frequency.cancelScheduledValues(now);
-        voiceOscillators[i].frequency.setValueAtTime(Math.max(20, voiceOscillators[i].frequency.value), now);
+        voiceOscillators[i].frequency.setValueAtTime(Math.max(10, voiceOscillators[i].frequency.value), now);
         voiceOscillators[i].frequency.exponentialRampToValueAtTime(freq, now + transitionDuration);
       }
 
@@ -574,13 +573,14 @@
       }
     }
 
+    // Auto-resume AudioContext on returning to foreground
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible' && audioCtx && audioCtx.state === 'suspended') {
+      if (document.visibilityState === 'visible' && audioCtx && audioCtx.state !== 'running') {
         audioCtx.resume();
       }
     });
 
-    // --- UI Element Selectors ---
+    // --- UI Binding & Unified Event Handling ---
     const unlockOverlay = document.getElementById('audio-unlock-overlay');
     const unlockBtn = document.getElementById('unlock-btn');
     const bngChord = document.getElementById('bng-chord');
@@ -591,16 +591,21 @@
     const hslLength = document.getElementById('hsl-length');
     const hslIndicator = document.getElementById('hsl-indicator');
 
+    let isAudioUnlocked = false;
+
     async function handleUnlock(e) {
       if (e) e.preventDefault();
-      await unlockAudioIOS();
+      if (isAudioUnlocked) return;
+
+      await unlockAudioEngine();
+      isAudioUnlocked = true;
+
       if (unlockOverlay) {
         unlockOverlay.style.display = 'none';
       }
     }
 
     if (unlockBtn) {
-      unlockBtn.addEventListener('pointerdown', handleUnlock);
       unlockBtn.addEventListener('click', handleUnlock);
     }
 
@@ -643,6 +648,7 @@
       syncAutoTimer();
     });
 
+    // Continuous slider interaction using PointerEvents
     let isDraggingSlider = false;
 
     function updateSliderPosition(pointerX) {
@@ -654,15 +660,13 @@
       hslIndicator.style.left = `${percentage * 100}%`;
 
       chordLengthMs = 2000 + percentage * (20000 - 2000);
-
-      if (autoMode) {
-        syncAutoTimer();
-      }
     }
 
     hslLength.addEventListener('pointerdown', (e) => {
       isDraggingSlider = true;
-      hslLength.setPointerCapture(e.pointerId);
+      try {
+        hslLength.setPointerCapture(e.pointerId);
+      } catch (err) {}
       updateSliderPosition(e.clientX);
     });
 
@@ -672,16 +676,22 @@
       }
     });
 
-    hslLength.addEventListener('pointerup', (e) => {
+    function endSliderDrag(e) {
       if (isDraggingSlider) {
         isDraggingSlider = false;
-        hslLength.releasePointerCapture(e.pointerId);
+        try {
+          if (hslLength.hasPointerCapture(e.pointerId)) {
+            hslLength.releasePointerCapture(e.pointerId);
+          }
+        } catch (err) {}
+        if (autoMode) {
+          syncAutoTimer();
+        }
       }
-    });
+    }
 
-    hslLength.addEventListener('pointercancel', () => {
-      isDraggingSlider = false;
-    });
+    hslLength.addEventListener('pointerup', endSliderDrag);
+    hslLength.addEventListener('pointercancel', endSliderDrag);
   </script>
 </body>
 </html>
